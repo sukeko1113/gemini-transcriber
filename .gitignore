@@ -1,0 +1,41 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+env/
+ENV/
+*.egg-info/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+
+# PyInstaller / ビルド成果物
+build/
+dist/
+Output/
+*.spec.bak
+
+# 同梱バイナリ・アセット(各環境/CIで配置)
+ffmpeg/ffmpeg.exe
+ffmpeg/ffmpeg
+resources/icon.ico
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# ローカル設定・秘密情報
+.env
+.env.*
+config.local.json

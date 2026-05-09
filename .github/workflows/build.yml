@@ -1,0 +1,86 @@
+name: Build Windows Installer
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write   # Releases 作成のため
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Download ffmpeg (essentials build)
+        shell: pwsh
+        run: |
+          $url = 'https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip'
+          Write-Host "Downloading ffmpeg from $url"
+          Invoke-WebRequest -Uri $url -OutFile ffmpeg.zip -UseBasicParsing
+          Expand-Archive -Path ffmpeg.zip -DestinationPath ffmpeg-extracted -Force
+          $exe = Get-ChildItem -Path ffmpeg-extracted -Filter ffmpeg.exe -Recurse | Select-Object -First 1
+          if (-not $exe) { throw 'ffmpeg.exe not found in archive' }
+          New-Item -ItemType Directory -Path ffmpeg -Force | Out-Null
+          Copy-Item -Path $exe.FullName -Destination ffmpeg/ffmpeg.exe -Force
+          & ffmpeg/ffmpeg.exe -version
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Build with PyInstaller
+        run: pyinstaller --clean -y build.spec
+
+      - name: Smoke test (exe should exist)
+        shell: pwsh
+        run: |
+          if (-not (Test-Path 'dist/GeminiTranscriber/GeminiTranscriber.exe')) {
+            throw 'Build artifact not found'
+          }
+          Get-ChildItem dist/GeminiTranscriber | Select-Object Name, Length
+
+      - name: Install Inno Setup
+        run: choco install innosetup -y --no-progress
+
+      - name: Build installer (Inno Setup)
+        shell: cmd
+        run: '"C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer.iss'
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: GeminiTranscriber-Installer
+          path: Output/*.exe
+          if-no-files-found: error
+
+      - name: Upload portable build (zip)
+        uses: actions/upload-artifact@v4
+        with:
+          name: GeminiTranscriber-Portable
+          path: dist/GeminiTranscriber/**
+
+      - name: Create GitHub Release on tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: Output/*.exe
+          generate_release_notes: true
+          draft: false
+          prerelease: false
