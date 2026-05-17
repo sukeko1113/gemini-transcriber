@@ -23,8 +23,8 @@ class App(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
         self.title(APP_TITLE)
-        self.geometry("760x620")
-        self.minsize(680, 520)
+        self.geometry("760x660")
+        self.minsize(680, 560)
 
         self.cfg = load_config()
         self.msg_queue: "queue.Queue[tuple[str, object]]" = queue.Queue()
@@ -92,6 +92,14 @@ class App(tk.Tk):
         ttk.Label(frm_adv, text="(長すぎるとアップロード/転写が失敗しやすくなります)",
                   foreground="#666").grid(row=2, column=2, columnspan=2, sticky="w", padx=6, pady=4)
 
+        # タイムスタンプ・チェックボックス(新規)
+        self.var_timestamps = tk.BooleanVar(value=False)
+        ttk.Checkbutton(
+            frm_adv,
+            text="タイムスタンプを付ける(段落ごとに [時:分:秒] を挿入)",
+            variable=self.var_timestamps,
+        ).grid(row=3, column=0, columnspan=4, sticky="w", padx=6, pady=(0, 6))
+
         # === 操作ボタン ===
         frm_btn = ttk.Frame(self)
         frm_btn.grid(row=3, column=0, sticky="ew", **pad)
@@ -135,10 +143,11 @@ class App(tk.Tk):
                 self.var_chunk.set(int(chunk))
             except Exception:
                 pass
+        if "with_timestamps" in self.cfg:
+            self.var_timestamps.set(bool(self.cfg.get("with_timestamps")))
         if last_in := self.cfg.get("last_input"):
             if Path(last_in).exists():
                 self.var_input.set(last_in)
-        # 出力先は基本「同じフォルダ」モードを維持
         self._on_toggle_use_input_dir()
 
     # ------------------------------------------------------------------
@@ -220,16 +229,17 @@ class App(tk.Tk):
             messagebox.showwarning("API キー", "Gemini の API キーを入力してください。")
             return
 
-        # 設定を保存
+        with_ts = bool(self.var_timestamps.get())
+
         self.cfg.update({
             "api_key": api,
             "model": self.var_model.get(),
             "chunk_minutes": int(self.var_chunk.get()),
+            "with_timestamps": with_ts,
             "last_input": in_path,
         })
         save_config(self.cfg)
 
-        # ログクリア
         self.txt_log.configure(state="normal")
         self.txt_log.delete("1.0", "end")
         self.txt_log.configure(state="disabled")
@@ -242,7 +252,14 @@ class App(tk.Tk):
         self._cancel_flag.clear()
         self._worker = threading.Thread(
             target=self._run_worker,
-            args=(Path(in_path), Path(out_dir), api, self.var_model.get(), int(self.var_chunk.get())),
+            args=(
+                Path(in_path),
+                Path(out_dir),
+                api,
+                self.var_model.get(),
+                int(self.var_chunk.get()),
+                with_ts,
+            ),
             daemon=True,
         )
         self._worker.start()
@@ -260,6 +277,7 @@ class App(tk.Tk):
         api_key: str,
         model: str,
         chunk_minutes: int,
+        with_timestamps: bool,
     ) -> None:
         try:
             result = run_pipeline(
@@ -271,6 +289,7 @@ class App(tk.Tk):
                 on_log=lambda m: self._post("log", m),
                 on_progress=lambda c, t: self._post("progress", (c, t)),
                 is_cancelled=self._cancel_flag.is_set,
+                with_timestamps=with_timestamps,
             )
             self._post("done", result)
         except Exception:
