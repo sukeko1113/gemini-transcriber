@@ -11,7 +11,7 @@ from typing import Callable, Optional
 from google import genai
 
 from .audio import split_audio
-from .transcribe import transcribe_audio, write_docx
+from .transcribe import transcribe_audio, write_docx, shift_timestamps
 
 
 LogFn = Callable[[str], None]
@@ -41,13 +41,13 @@ def run_pipeline(
     on_log: LogFn,
     on_progress: ProgressFn,
     is_cancelled: CancelFn,
+    with_timestamps: bool = False,
 ) -> Optional[Path]:
     """音声ファイル → docx を生成。キャンセル時は None を返す。"""
     audio_path = Path(audio_path)
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # 作業フォルダ(分割チャンクとテキストキャッシュ)
     work_dir = output_dir / f".work_{audio_path.stem}"
     chunks_dir = work_dir / "chunks"
     cache_dir = work_dir / "transcripts"
@@ -56,6 +56,8 @@ def run_pipeline(
     output_path = _unique_path(output_dir / f"{audio_path.stem}.docx")
 
     on_log(f"出力先: {output_path}")
+    if with_timestamps:
+        on_log("タイムスタンプ付き出力: 有効")
     on_log(f"音声を {chunk_minutes} 分単位で分割します...")
     chunks = split_audio(audio_path, chunks_dir, chunk_minutes * 60)
     on_log(f"{len(chunks)} 個のチャンクに分割しました。")
@@ -68,13 +70,18 @@ def run_pipeline(
     transcripts: list[str] = []
     on_progress(0, len(chunks))
 
+    chunk_seconds = chunk_minutes * 60
+    # タイムスタンプの有無で別キャッシュにする(混在を防ぐ)
+    cache_suffix = ".ts.txt" if with_timestamps else ".txt"
+
     for i, chunk in enumerate(chunks):
         if is_cancelled():
             on_log("キャンセルされました。")
             return None
 
-        cache_path = cache_dir / f"{chunk.stem}.txt"
+        cache_path = cache_dir / f"{chunk.stem}{cache_suffix}"
         label = f"[{i + 1}/{len(chunks)}] {chunk.name}"
+        offset = i * chunk_seconds
 
         if cache_path.exists():
             on_log(f"{label} (キャッシュから復元)")
@@ -82,7 +89,11 @@ def run_pipeline(
         else:
             on_log(f"{label} 文字起こし中...")
             try:
-                text = transcribe_audio(client, chunk, model)
+                raw = transcribe_audio(
+                    client, chunk, model, with_timestamps=with_timestamps
+                )
+                # チャンク内相対時刻 [MM:SS] を絶対時刻 [HH:MM:SS] に変換
+                text = shift_timestamps(raw, offset) if with_timestamps else raw
                 cache_path.write_text(text, encoding="utf-8")
             except Exception as e:
                 on_log(f"  失敗: {e}")
