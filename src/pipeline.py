@@ -32,6 +32,14 @@ def _unique_path(base: Path) -> Path:
         i += 1
 
 
+def _cache_suffix(with_timestamps: bool, with_diarization: bool) -> str:
+    if with_diarization:
+        return ".diar.txt"
+    if with_timestamps:
+        return ".ts.txt"
+    return ".txt"
+
+
 def run_pipeline(
     audio_path: Path,
     output_dir: Path,
@@ -42,8 +50,13 @@ def run_pipeline(
     on_progress: ProgressFn,
     is_cancelled: CancelFn,
     with_timestamps: bool = False,
+    with_diarization: bool = False,
 ) -> Optional[Path]:
     """音声ファイル → docx を生成。キャンセル時は None を返す。"""
+    # 話者識別が ON の場合、タイムスタンプも自動的に ON にする
+    if with_diarization:
+        with_timestamps = True
+
     audio_path = Path(audio_path)
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -56,7 +69,9 @@ def run_pipeline(
     output_path = _unique_path(output_dir / f"{audio_path.stem}.docx")
 
     on_log(f"出力先: {output_path}")
-    if with_timestamps:
+    if with_diarization:
+        on_log("話者識別: 有効(タイムスタンプも自動で有効化)")
+    elif with_timestamps:
         on_log("タイムスタンプ付き出力: 有効")
     on_log(f"音声を {chunk_minutes} 分単位で分割します...")
     chunks = split_audio(audio_path, chunks_dir, chunk_minutes * 60)
@@ -71,8 +86,7 @@ def run_pipeline(
     on_progress(0, len(chunks))
 
     chunk_seconds = chunk_minutes * 60
-    # タイムスタンプの有無で別キャッシュにする(混在を防ぐ)
-    cache_suffix = ".ts.txt" if with_timestamps else ".txt"
+    cache_suffix = _cache_suffix(with_timestamps, with_diarization)
 
     for i, chunk in enumerate(chunks):
         if is_cancelled():
@@ -90,7 +104,9 @@ def run_pipeline(
             on_log(f"{label} 文字起こし中...")
             try:
                 raw = transcribe_audio(
-                    client, chunk, model, with_timestamps=with_timestamps
+                    client, chunk, model,
+                    with_timestamps=with_timestamps,
+                    with_diarization=with_diarization,
                 )
                 # チャンク内相対時刻 [MM:SS] を絶対時刻 [HH:MM:SS] に変換
                 text = shift_timestamps(raw, offset) if with_timestamps else raw
@@ -101,7 +117,12 @@ def run_pipeline(
 
         transcripts.append(text)
         # 都度保存(途中で落ちてもここまでは残る)
-        write_docx(transcripts, output_path, audio_path.stem)
+        write_docx(
+            transcripts,
+            output_path,
+            audio_path.stem,
+            diarization_note=with_diarization,
+        )
         on_progress(i + 1, len(chunks))
 
     on_log(f"完了: {output_path.name}")

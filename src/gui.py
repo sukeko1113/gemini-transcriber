@@ -23,8 +23,8 @@ class App(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
         self.title(APP_TITLE)
-        self.geometry("760x660")
-        self.minsize(680, 560)
+        self.geometry("760x700")
+        self.minsize(680, 600)
 
         self.cfg = load_config()
         self.msg_queue: "queue.Queue[tuple[str, object]]" = queue.Queue()
@@ -33,6 +33,7 @@ class App(tk.Tk):
 
         self._build_ui()
         self._populate_from_config()
+        self._update_timestamps_state()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         self.after(100, self._drain_queue)
 
@@ -92,13 +93,31 @@ class App(tk.Tk):
         ttk.Label(frm_adv, text="(長すぎるとアップロード/転写が失敗しやすくなります)",
                   foreground="#666").grid(row=2, column=2, columnspan=2, sticky="w", padx=6, pady=4)
 
-        # タイムスタンプ・チェックボックス(新規)
+        # タイムスタンプ・チェックボックス
         self.var_timestamps = tk.BooleanVar(value=False)
-        ttk.Checkbutton(
+        self.chk_timestamps = ttk.Checkbutton(
             frm_adv,
             text="タイムスタンプを付ける(段落ごとに [時:分:秒] を挿入)",
             variable=self.var_timestamps,
-        ).grid(row=3, column=0, columnspan=4, sticky="w", padx=6, pady=(0, 6))
+        )
+        self.chk_timestamps.grid(row=3, column=0, columnspan=4, sticky="w", padx=6, pady=(0, 2))
+
+        # 話者識別チェックボックス(新規)
+        self.var_diarization = tk.BooleanVar(value=False)
+        self.chk_diarization = ttk.Checkbutton(
+            frm_adv,
+            text="話者を識別する(声の特徴で 発言者A/B/C... に分け、話者切替時にタイムスタンプを挿入)",
+            variable=self.var_diarization,
+            command=self._update_timestamps_state,
+        )
+        self.chk_diarization.grid(row=4, column=0, columnspan=4, sticky="w", padx=6, pady=(0, 2))
+
+        ttk.Label(
+            frm_adv,
+            text="※ 話者ラベルはチャンクごとに識別されるため、境界をまたぐと同一人物が別ラベルになる場合があります",
+            foreground="#888",
+            wraplength=700,
+        ).grid(row=5, column=0, columnspan=4, sticky="w", padx=24, pady=(0, 6))
 
         # === 操作ボタン ===
         frm_btn = ttk.Frame(self)
@@ -145,10 +164,20 @@ class App(tk.Tk):
                 pass
         if "with_timestamps" in self.cfg:
             self.var_timestamps.set(bool(self.cfg.get("with_timestamps")))
+        if "with_diarization" in self.cfg:
+            self.var_diarization.set(bool(self.cfg.get("with_diarization")))
         if last_in := self.cfg.get("last_input"):
             if Path(last_in).exists():
                 self.var_input.set(last_in)
         self._on_toggle_use_input_dir()
+
+    def _update_timestamps_state(self) -> None:
+        """話者識別が ON のとき、タイムスタンプは強制 ON + 無効化(変更不可)。"""
+        if self.var_diarization.get():
+            self.var_timestamps.set(True)
+            self.chk_timestamps.configure(state="disabled")
+        else:
+            self.chk_timestamps.configure(state="normal")
 
     # ------------------------------------------------------------------
     # ハンドラ
@@ -230,12 +259,16 @@ class App(tk.Tk):
             return
 
         with_ts = bool(self.var_timestamps.get())
+        with_diar = bool(self.var_diarization.get())
+        if with_diar:
+            with_ts = True  # 強制
 
         self.cfg.update({
             "api_key": api,
             "model": self.var_model.get(),
             "chunk_minutes": int(self.var_chunk.get()),
             "with_timestamps": with_ts,
+            "with_diarization": with_diar,
             "last_input": in_path,
         })
         save_config(self.cfg)
@@ -259,6 +292,7 @@ class App(tk.Tk):
                 self.var_model.get(),
                 int(self.var_chunk.get()),
                 with_ts,
+                with_diar,
             ),
             daemon=True,
         )
@@ -278,6 +312,7 @@ class App(tk.Tk):
         model: str,
         chunk_minutes: int,
         with_timestamps: bool,
+        with_diarization: bool,
     ) -> None:
         try:
             result = run_pipeline(
@@ -290,6 +325,7 @@ class App(tk.Tk):
                 on_progress=lambda c, t: self._post("progress", (c, t)),
                 is_cancelled=self._cancel_flag.is_set,
                 with_timestamps=with_timestamps,
+                with_diarization=with_diarization,
             )
             self._post("done", result)
         except Exception:
