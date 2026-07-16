@@ -16,15 +16,19 @@ from .pipeline import run_pipeline
 
 
 APP_TITLE = "Gemini 文字起こし"
-MODELS = ["gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.0-flash"]
+MODELS = ["gemini-2.5-flash", "gemini-2.5-pro"]
+ROSTER_HINT = (
+    "1行に1人、「名前(役職): 補足」の形式で入力(例: 佐藤(理事): 名乗ることが多い)。"
+    "空欄の場合は 発言者A/B/C... 方式になります。"
+)
 
 
 class App(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
         self.title(APP_TITLE)
-        self.geometry("760x700")
-        self.minsize(680, 600)
+        self.geometry("760x820")
+        self.minsize(680, 700)
 
         self.cfg = load_config()
         self.msg_queue: "queue.Queue[tuple[str, object]]" = queue.Queue()
@@ -33,7 +37,7 @@ class App(tk.Tk):
 
         self._build_ui()
         self._populate_from_config()
-        self._update_timestamps_state()
+        self._update_diarization_state()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         self.after(100, self._drain_queue)
 
@@ -102,26 +106,48 @@ class App(tk.Tk):
         )
         self.chk_timestamps.grid(row=3, column=0, columnspan=4, sticky="w", padx=6, pady=(0, 2))
 
-        # 話者識別チェックボックス(新規)
+        # 話者識別チェックボックス
         self.var_diarization = tk.BooleanVar(value=False)
         self.chk_diarization = ttk.Checkbutton(
             frm_adv,
-            text="話者を識別する(声の特徴で 発言者A/B/C... に分け、話者切替時にタイムスタンプを挿入)",
+            text="話者を識別する(話者切替時にタイムスタンプを挿入)",
             variable=self.var_diarization,
-            command=self._update_timestamps_state,
+            command=self._update_diarization_state,
         )
         self.chk_diarization.grid(row=4, column=0, columnspan=4, sticky="w", padx=6, pady=(0, 2))
 
-        ttk.Label(
+        self.lbl_diar_note = ttk.Label(
             frm_adv,
-            text="※ 話者ラベルはチャンクごとに識別されるため、境界をまたぐと同一人物が別ラベルになる場合があります",
+            text="※ 名簿なしの場合、話者ラベルはチャンクごとに識別されるため、境界をまたぐと同一人物が別ラベルになる場合があります",
             foreground="#888",
             wraplength=700,
-        ).grid(row=5, column=0, columnspan=4, sticky="w", padx=24, pady=(0, 6))
+        )
+        self.lbl_diar_note.grid(row=5, column=0, columnspan=4, sticky="w", padx=24, pady=(0, 2))
+
+        # 逐語モード・チェックボックス(v1.3.0)
+        self.var_verbatim = tk.BooleanVar(value=False)
+        self.chk_verbatim = ttk.Checkbutton(
+            frm_adv,
+            text="逐語モード(「えー」等のフィラー・言い直しを残し、整文しない。反訳・記録用)",
+            variable=self.var_verbatim,
+        )
+        self.chk_verbatim.grid(row=6, column=0, columnspan=4, sticky="w", padx=6, pady=(0, 6))
+
+        # === 参加者名簿(v1.3.0) ===
+        self.frm_roster = ttk.LabelFrame(self, text="参加者名簿(任意・話者識別が ON のとき使用)")
+        self.frm_roster.grid(row=3, column=0, sticky="ew", **pad)
+        self.frm_roster.columnconfigure(0, weight=1)
+        ttk.Label(self.frm_roster, text=ROSTER_HINT, foreground="#666", wraplength=700)\
+            .grid(row=0, column=0, columnspan=2, sticky="w", padx=6, pady=(4, 0))
+        self.txt_roster = tk.Text(self.frm_roster, height=5, wrap="word")
+        self.txt_roster.grid(row=1, column=0, sticky="ew", padx=6, pady=6)
+        sb_roster = ttk.Scrollbar(self.frm_roster, orient="vertical", command=self.txt_roster.yview)
+        sb_roster.grid(row=1, column=1, sticky="ns", pady=6)
+        self.txt_roster.configure(yscrollcommand=sb_roster.set)
 
         # === 操作ボタン ===
         frm_btn = ttk.Frame(self)
-        frm_btn.grid(row=3, column=0, sticky="ew", **pad)
+        frm_btn.grid(row=4, column=0, sticky="ew", **pad)
         self.btn_start = ttk.Button(frm_btn, text="文字起こし開始", command=self._start)
         self.btn_start.pack(side="left")
         self.btn_cancel = ttk.Button(frm_btn, text="キャンセル", command=self._cancel, state="disabled")
@@ -131,7 +157,7 @@ class App(tk.Tk):
 
         # === 進捗 ===
         frm_prog = ttk.Frame(self)
-        frm_prog.grid(row=4, column=0, sticky="ew", **pad)
+        frm_prog.grid(row=5, column=0, sticky="ew", **pad)
         frm_prog.columnconfigure(0, weight=1)
         self.progress = ttk.Progressbar(frm_prog, mode="determinate")
         self.progress.grid(row=0, column=0, sticky="ew")
@@ -141,10 +167,10 @@ class App(tk.Tk):
 
         # === ログ ===
         frm_log = ttk.LabelFrame(self, text="ログ")
-        frm_log.grid(row=5, column=0, sticky="nsew", **pad)
+        frm_log.grid(row=6, column=0, sticky="nsew", **pad)
         frm_log.columnconfigure(0, weight=1)
         frm_log.rowconfigure(0, weight=1)
-        self.rowconfigure(5, weight=1)
+        self.rowconfigure(6, weight=1)
         self.txt_log = tk.Text(frm_log, height=10, wrap="word", state="disabled")
         self.txt_log.grid(row=0, column=0, sticky="nsew", padx=6, pady=6)
         sb = ttk.Scrollbar(frm_log, orient="vertical", command=self.txt_log.yview)
@@ -166,18 +192,26 @@ class App(tk.Tk):
             self.var_timestamps.set(bool(self.cfg.get("with_timestamps")))
         if "with_diarization" in self.cfg:
             self.var_diarization.set(bool(self.cfg.get("with_diarization")))
+        if "verbatim" in self.cfg:
+            self.var_verbatim.set(bool(self.cfg.get("verbatim")))
+        if roster := self.cfg.get("roster"):
+            self.txt_roster.delete("1.0", "end")
+            self.txt_roster.insert("1.0", str(roster))
         if last_in := self.cfg.get("last_input"):
             if Path(last_in).exists():
                 self.var_input.set(last_in)
         self._on_toggle_use_input_dir()
 
-    def _update_timestamps_state(self) -> None:
-        """話者識別が ON のとき、タイムスタンプは強制 ON + 無効化(変更不可)。"""
+    def _update_diarization_state(self) -> None:
+        """話者識別 ON: タイムスタンプは強制 ON + 無効化。名簿欄を有効化。
+        話者識別 OFF: タイムスタンプ選択可。名簿欄は無効化(誤解防止)。"""
         if self.var_diarization.get():
             self.var_timestamps.set(True)
             self.chk_timestamps.configure(state="disabled")
+            self.txt_roster.configure(state="normal", background="white")
         else:
             self.chk_timestamps.configure(state="normal")
+            self.txt_roster.configure(state="disabled", background="#f0f0f0")
 
     # ------------------------------------------------------------------
     # ハンドラ
@@ -243,6 +277,17 @@ class App(tk.Tk):
         except Exception as e:
             messagebox.showerror("エラー", str(e))
 
+    def _get_roster(self) -> str:
+        """名簿欄のテキストを取得(disabled 状態でも読めるように一時的に戻す)"""
+        state = self.txt_roster.cget("state")
+        if state == "disabled":
+            self.txt_roster.configure(state="normal")
+            text = self.txt_roster.get("1.0", "end").strip()
+            self.txt_roster.configure(state="disabled")
+        else:
+            text = self.txt_roster.get("1.0", "end").strip()
+        return text
+
     # ------------------------------------------------------------------
     # 実行
     # ------------------------------------------------------------------
@@ -260,6 +305,8 @@ class App(tk.Tk):
 
         with_ts = bool(self.var_timestamps.get())
         with_diar = bool(self.var_diarization.get())
+        verbatim = bool(self.var_verbatim.get())
+        roster = self._get_roster()
         if with_diar:
             with_ts = True  # 強制
 
@@ -269,6 +316,8 @@ class App(tk.Tk):
             "chunk_minutes": int(self.var_chunk.get()),
             "with_timestamps": with_ts,
             "with_diarization": with_diar,
+            "verbatim": verbatim,
+            "roster": roster,
             "last_input": in_path,
         })
         save_config(self.cfg)
@@ -293,6 +342,8 @@ class App(tk.Tk):
                 int(self.var_chunk.get()),
                 with_ts,
                 with_diar,
+                roster,
+                verbatim,
             ),
             daemon=True,
         )
@@ -313,6 +364,8 @@ class App(tk.Tk):
         chunk_minutes: int,
         with_timestamps: bool,
         with_diarization: bool,
+        roster: str,
+        verbatim: bool,
     ) -> None:
         try:
             result = run_pipeline(
@@ -326,6 +379,8 @@ class App(tk.Tk):
                 is_cancelled=self._cancel_flag.is_set,
                 with_timestamps=with_timestamps,
                 with_diarization=with_diarization,
+                roster=roster,
+                verbatim=verbatim,
             )
             self._post("done", result)
         except Exception:
